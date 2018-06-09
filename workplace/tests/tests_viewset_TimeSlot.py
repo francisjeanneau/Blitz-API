@@ -21,7 +21,6 @@ User = get_user_model()
 
 LOCAL_TIMEZONE = pytz.timezone(settings.TIME_ZONE)
 
-
 class TimeSlotTests(APITestCase):
 
     @classmethod
@@ -421,6 +420,7 @@ class TimeSlotTests(APITestCase):
         self.client.force_authenticate(user=self.admin)
 
         data = {
+            'name': "random_time_slot",
             'period': reverse('period-detail', args=[self.period.id]),
             'price': '10.00',  # Will use Period's price if not provided
             'start_time': LOCAL_TIMEZONE.localize(datetime(2130, 1, 15, 12)),
