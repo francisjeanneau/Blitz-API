@@ -8,3 +8,5 @@ Markdown==2.6.11
 Pygments==2.2.0
 imailing==1.0.0
 Pillow==5.1.0
+python-decouple==3.1
+django-storages==1.6.6
