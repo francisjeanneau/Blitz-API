@@ -9,7 +9,11 @@ from django.db import transaction
 from workplace.models import Reservation
 
 from .models import (Package, Membership, Order, OrderLine, BaseProduct,
-                     CreditCard)
+                     CreditCard, PaymentProfile)
+from .services import (charge_payment,
+                       get_external_payment_profile,
+                       create_external_payment_profile,
+                       create_external_card,)
 
 
 class BaseProductSerializer(serializers.HyperlinkedModelSerializer):
@@ -81,6 +85,32 @@ class CreditCardSerializer(serializers.HyperlinkedModelSerializer):
                 'help_text': _("Name of the credit card."),
                 'validators': [
                     UniqueValidator(queryset=CreditCard.objects.all())
+                ],
+            },
+        }
+
+
+class PaymentProfileSerializer(serializers.HyperlinkedModelSerializer):
+    id = serializers.ReadOnlyField()
+    external_data = serializers.SerializerMethodField()
+
+    def get_external_data(self, obj):
+        profile = get_external_payment_profile(obj.external_api_id)
+        return profile.json()
+
+    class Meta:
+        model = PaymentProfile
+        fields = (
+            'id',
+            'name',
+            'owner',
+            'external_data',
+        )
+        extra_kwargs = {
+            'name': {
+                'help_text': _("Name of the payment profile."),
+                'validators': [
+                    UniqueValidator(queryset=PaymentProfile.objects.all())
                 ],
             },
         }
@@ -165,33 +195,80 @@ class OrderSerializer(serializers.HyperlinkedModelSerializer):
 
     @transaction.atomic()
     def create(self, validated_data):
+        """
+        Create an Order and charge the user.
+        """
         user = self.context['request'].user
         orderlines_data = validated_data.pop('order_lines')
         payment_token = validated_data.pop('payment_token', None)
         single_use_token = validated_data.pop('single_use_token', None)
-        validated_data['authorization_id'] = "1"
-        validated_data['settlement_id'] = "1"
+        # Temporary IDs until the external profile is created.
+        validated_data['authorization_id'] = "0"
+        validated_data['settlement_id'] = "0"
         validated_data['transaction_date'] = timezone.now()
         validated_data['user'] = user
+
         order = Order.objects.create(**validated_data)
         for orderline_data in orderlines_data:
             OrderLine.objects.create(order=order, **orderline_data)
+        amount = int(round(order.total_cost*100))
 
         if payment_token:
-            # Validate the payment with Paysafe
-            pass
-        elif single_use_token:
-            # Validate the payment with Paysafe
-            pass
-        else:
-            pass
-            # return serializers.ValidationError({
-            #     "non_field_errors": [_(
-            #         "A payment_token or single_use_token is required to "
-            #         "create an order."
-            #     )]
-            # })
+            # Charge the order with the external payment API
+            charge_response = charge_payment(
+                amount,
+                payment_token,
+                str(order.id)
+            )
 
+        elif single_use_token:
+            # Try to get existing PaymentProfile
+            profile = PaymentProfile.objects.filter(owner=order.user).first()
+            if profile:
+                # Add card to the external profile
+                card_create_response = create_external_card(
+                    profile.external_api_id,
+                    single_use_token
+                )
+                charge_response = charge_payment(
+                    amount,
+                    card_create_response.json()['paymentToken'],
+                    str(order.id)
+                )
+            else:
+                # Else create a new profile with the provided single_use_token
+                create_profile_response = create_external_payment_profile(
+                    single_use_token,
+                    order.user
+                )
+                profile = PaymentProfile.objects.create(
+                    name="Paysafe",
+                    owner=order.user,
+                    external_api_id=create_profile_response.json()['id'],
+                    external_api_url='{0}{1}'.format(
+                        create_profile_response.url,
+                        create_profile_response.json()['id']
+                    )
+                )
+                charge_response = charge_payment(
+                    amount,
+                    create_profile_response.json()['cards'][0]['paymentToken'],
+                    str(order.id)
+                )
+
+        else:
+            raise serializers.ValidationError({
+                'non_field_errors': [_(
+                    "A payment_token or single_use_token is required to "
+                    "create an order."
+                )]
+            })
+
+        order.authorization_id = charge_response.json()['id']
+        order.settlement_id = charge_response.json()['settlements'][0]['id']
+        order.save()
+
+        user = order.user
         membership_orderlines = order.order_lines.filter(
             content_type__model="membership"
         )
@@ -205,12 +282,6 @@ class OrderSerializer(serializers.HyperlinkedModelSerializer):
             user.membership = membership_orderlines[0].content_object
         if package_orderlines:
             for package_orderline in package_orderlines:
-                # new_tickets = sum(
-                #    packages_order.values_list(
-                #        "content_object__tickets", flat=True
-                #    )
-                # )
-                # user.tickets += new_tickets
                 user.tickets += (
                     package_orderline.content_object.reservations *
                     package_orderline.quantity
