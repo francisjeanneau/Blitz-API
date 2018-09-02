@@ -6,9 +6,11 @@ from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from django.contrib.auth.models import User
+from django.contrib.auth import get_user_model
 from blitz_api.models import TemporaryToken
 from blitz_api.factories import UserFactory
+
+User = get_user_model()
 
 
 class ObtainTemporaryAuthTokenTests(APITestCase):
@@ -20,12 +22,29 @@ class ObtainTemporaryAuthTokenTests(APITestCase):
         self.user.save()
         self.url = reverse('token_api')
 
-    def test_authenticate(self):
+    def test_authenticate_username(self):
         """
         Ensure we can authenticate on the platform.
         """
         data = {
-            'login': self.user.username,
+            'username': self.user.username,
+            'password': 'Test123!'
+        }
+
+        response = self.client.post(self.url, data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        token = TemporaryToken.objects.get(
+            user__username=self.user.username,
+        )
+        self.assertContains(response, token)
+
+    def test_authenticate_email(self):
+        """
+        Ensure we can authenticate on the platform.
+        """
+        data = {
+            'username': self.user.email,
             'password': 'Test123!'
         }
 
@@ -42,7 +61,7 @@ class ObtainTemporaryAuthTokenTests(APITestCase):
         Ensure we can authenticate on the platform when token is expired.
         """
         data = {
-            'login': self.user.username,
+            'username': self.user.username,
             'password': 'Test123!'
         }
 
@@ -69,7 +88,7 @@ class ObtainTemporaryAuthTokenTests(APITestCase):
         Ensure we can't authenticate with a wrong password'
         """
         data = {
-            'login': self.user.username,
+            'username': self.user.username,
             'password': 'test123!'  # No caps on the first letter
         }
 
@@ -86,7 +105,7 @@ class ObtainTemporaryAuthTokenTests(APITestCase):
         Ensure we can't authenticate with a wrong username
         """
         data = {
-            'login': 'Jon',  # Forget the `h` in `John`
+            'username': 'Jon',  # Forget the `h` in `John`
             'password': 'Test123!'
         }
 
@@ -103,7 +122,7 @@ class ObtainTemporaryAuthTokenTests(APITestCase):
         Ensure we can't authenticate if user is inactive
         """
         data = {
-            'login': self.user.username,
+            'username': self.user.username,
             'password': 'Test123!'
         }
 
@@ -127,19 +146,15 @@ class ObtainTemporaryAuthTokenTests(APITestCase):
 
     def test_authenticate_missing_parameter(self):
         """
-        Ensure we can't authenticate if "login" is not provided.
+        Ensure we can't authenticate if "username" or "password" are not
+        provided.
         """
-        data = {
-            'password': 'Test123!'
-        }
-
-        response = self.client.post(self.url, data, format='json')
+        response = self.client.post(self.url, {}, format='json')
 
         content = {
-            'login': [
-                'This field is required.'
-                ]
-            }
+            'password': ['This field is required.'],
+            'username': ['This field is required.']
+        }
 
         self.assertEqual(json.loads(response.content), content)
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
